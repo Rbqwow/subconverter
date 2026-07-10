@@ -50,6 +50,9 @@ struct Settings
     bool clashUseNewField = false, singBoxAddClashModes = true;
     std::string clashProxiesStyle = "flow", clashProxyGroupsStyle = "block";
     std::string proxyConfig, proxyRuleset, proxySubscription;
+    // allowlist of inbound request headers forwarded to upstream subscriptions.
+    // User-Agent is always forwarded; this list adds extra headers to forward.
+    string_array forwardRequestHeaders;
     int updateInterval = 0;
     std::string sortScript, filterScript;
 

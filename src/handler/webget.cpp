@@ -170,14 +170,48 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     header_list = curl_slist_append(header_list, "Content-Type: application/json;charset=utf-8");
     if(argument.request_headers)
     {
-        for(auto &x : *argument.request_headers)
+        if(argument.forward_inbound)
         {
-            auto header = x.first + ": " + x.second;
-            header_list = curl_slist_append(header_list, header.data());
+            // Forwarding inbound client headers to an upstream subscription: apply the
+            // allowlist. Only User-Agent plus headers named in global.forwardRequestHeaders
+            // are forwarded; inbound headers are never forwarded wholesale.
+            auto ua_it = argument.request_headers->find("User-Agent");
+            if(ua_it != argument.request_headers->end())
+                curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, ua_it->second.data());
+            else
+                curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, user_agent_str);
+            for(const auto &name : global.forwardRequestHeaders)
+            {
+                if(name.empty())
+                    continue;
+                auto it = argument.request_headers->find(name);
+                // skip the User-Agent (already set via CURLOPT_USERAGENT) by identity
+                if(it != argument.request_headers->end() && it != ua_it)
+                {
+                    auto header = it->first + ": " + it->second;
+                    header_list = curl_slist_append(header_list, header.data());
+                }
+            }
         }
-        if(!argument.request_headers->contains("User-Agent"))
-            curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, user_agent_str);
+        else
+        {
+            // Explicitly built header set (e.g. gist upload auth): forward in full.
+            for(auto &x : *argument.request_headers)
+            {
+                if(x.first == "User-Agent")
+                    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, x.second.data());
+                else
+                {
+                    auto header = x.first + ": " + x.second;
+                    header_list = curl_slist_append(header_list, header.data());
+                }
+            }
+            if(!argument.request_headers->contains("User-Agent"))
+                curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, user_agent_str);
+        }
     }
+    else
+        curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, user_agent_str);
     header_list = curl_slist_append(header_list, "SubConverter-Request: 1");
     header_list = curl_slist_append(header_list, "SubConverter-Version: " VERSION);
     if(header_list)
@@ -302,7 +336,7 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
     int return_code = 0;
     std::string content;
 
-    FetchArgument argument {HTTP_GET, url, proxy, nullptr, request_headers, nullptr, cache_ttl};
+    FetchArgument argument {HTTP_GET, url, proxy, nullptr, request_headers, nullptr, cache_ttl, false, true};
     FetchResult fetch_res {&return_code, &content, response_headers, nullptr};
 
     if (startsWith(url, "data:"))

@@ -25,6 +25,10 @@ struct FetchArgument
     std::string *cookies = nullptr;
     const unsigned int cache_ttl = 0;
     const bool keep_resp_on_fail = false;
+    // when true, request_headers holds inbound client headers being forwarded to
+    // an upstream subscription: apply the allowlist (User-Agent + global.forwardRequestHeaders).
+    // when false, request_headers is an explicitly built header set and is forwarded in full.
+    const bool forward_inbound = false;
 };
 
 struct FetchResult
