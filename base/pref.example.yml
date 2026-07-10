@@ -23,6 +23,10 @@ common:
   proxy_config: SYSTEM
   proxy_ruleset: SYSTEM
   proxy_subscription: NONE
+  # Extra inbound request headers forwarded to upstream subscriptions, besides User-Agent.
+  # User-Agent is always forwarded (or subconverter's default UA when the client sends none).
+  # Leave empty to forward only User-Agent. Comma-separated header names, e.g. [Cookie, Authorization]
+  forward_request_headers:
   append_proxy_type: false
   reload_conf_on_request: false
 
