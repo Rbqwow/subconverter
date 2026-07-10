@@ -1,7 +1,7 @@
 name: Publish Docker Image
 on: 
   push:
-    branches: [ master ]
+    branches: [ merge ]
     tags:
       - '**'
 
@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  REGISTRY_IMAGE: tindy2013/subconverter
+  REGISTRY_IMAGE: rbqwow/subconverter
 
 jobs:
   build:
@@ -57,7 +57,7 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Get commit SHA
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/merge'
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 

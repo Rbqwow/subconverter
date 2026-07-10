@@ -1,7 +1,7 @@
 name: GitHub CI
 on: 
   push:
-    branches: [ master ]
+    branches: [ merge ]
     tags:
       - '**'
   workflow_dispatch:
