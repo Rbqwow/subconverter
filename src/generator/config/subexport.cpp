@@ -331,16 +331,24 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
             break;
     }
 
+    // Pass 1: finalize Remark (append type / dedup) so dialer-proxy can remap
+    for(Proxy &x : nodes)
+    {
+        std::string type = getProxyTypeName(x.Type);
+        if(ext.append_proxy_type)
+            x.Remark = "[" + type + "] " + x.Remark;
+        processRemark(x.Remark, remarks_list, false);
+        remarks_list.emplace_back(x.Remark);
+    }
+    remapUnderlyingProxies(nodes);
+
+    // Pass 2: export with finalized Remark / UnderlyingProxy
     for(Proxy &x : nodes)
     {
         YAML::Node singleproxy;
 
         std::string type = getProxyTypeName(x.Type);
         std::string pluginopts = replaceAllDistinct(x.PluginOption, ";", "&");
-        if(ext.append_proxy_type)
-            x.Remark = "[" + type + "] " + x.Remark;
-
-        processRemark(x.Remark, remarks_list, false);
 
         tribool udp, tfo, scv;
         applyNodePrefFlags(x, ext, udp, tfo, scv);
@@ -837,7 +845,6 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
         else
             singleproxy.SetStyle(YAML::EmitterStyle::Flow);
         proxies.push_back(singleproxy);
-        remarks_list.emplace_back(x.Remark);
         nodelist.emplace_back(x);
     }
 
@@ -1046,6 +1053,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
     ini.erase_section();
     ini.set("{NONAME}", "DIRECT = direct");
 
+    // Pass 1: finalize Remark so underlying-proxy can remap
     for(Proxy &x : nodes)
     {
         if(ext.append_proxy_type)
@@ -1053,9 +1061,14 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             std::string type = getProxyTypeName(x.Type);
             x.Remark = "[" + type + "] " + x.Remark;
         }
-
         processRemark(x.Remark, remarks_list);
+        remarks_list.emplace_back(x.Remark);
+    }
+    remapUnderlyingProxies(nodes);
 
+    // Pass 2: export with finalized Remark / UnderlyingProxy
+    for(Proxy &x : nodes)
+    {
         std::string &hostname = x.Hostname, &username = x.Username, &password = x.Password, &method = x.EncryptMethod, &id = x.UserId, &transproto = x.TransferProtocol, &host = x.Host, &edge = x.Edge, &path = x.Path, &protocol = x.Protocol, &protoparam = x.ProtocolParam, &obfs = x.OBFS, &obfsparam = x.OBFSParam, &plugin = x.Plugin, &pluginopts = x.PluginOption, &underlying_proxy = x.UnderlyingProxy;
         std::string port = std::to_string(x.Port);
         bool &tlssecure = x.TLSSecure;
@@ -1262,7 +1275,6 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
             ini.set("{NONAME}", x.Remark + " = " + proxy);
             nodelist.emplace_back(x);
         }
-        remarks_list.emplace_back(x.Remark);
     }
 
     if(ext.nodelist)

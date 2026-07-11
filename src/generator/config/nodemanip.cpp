@@ -2,6 +2,8 @@
 #include <vector>
 #include <iostream>
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "handler/settings.h"
 #include "handler/webget.h"
@@ -14,6 +16,7 @@
 #include "utils/map_extra.h"
 #include "utils/network.h"
 #include "utils/regexp.h"
+#include "utils/string.h"
 #include "utils/urlencode.h"
 #include "nodemanip.h"
 #include "subexport.h"
@@ -474,6 +477,65 @@ std::string addEmoji(const Proxy &node, const RegexMatchConfigs &emoji_array, ex
     return node.Remark;
 }
 
+static bool isBuiltinProxyName(const std::string &name)
+{
+    static const std::unordered_set<std::string> kBuiltin = {
+        "DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"
+    };
+    return kBuiltin.count(name) > 0;
+}
+
+void remapUnderlyingProxies(std::vector<Proxy> &nodes)
+{
+    std::unordered_map<std::string, std::string> name_map;
+    name_map.reserve(nodes.size() * 3);
+
+    auto add_alias = [&name_map](const std::string &from, const std::string &to)
+    {
+        if(from.empty())
+            return;
+        name_map[from] = to;
+        std::string trimmed = trim(from);
+        if(trimmed != from && !trimmed.empty())
+            name_map[trimmed] = to;
+    };
+
+    for(const Proxy &node : nodes)
+    {
+        const std::string &final_name = node.Remark;
+        if(final_name.empty())
+            continue;
+        add_alias(node.OriginalRemark, final_name);
+        add_alias(final_name, final_name);
+    }
+
+    for(Proxy &node : nodes)
+    {
+        if(node.UnderlyingProxy.empty())
+            continue;
+
+        auto it = name_map.find(node.UnderlyingProxy);
+        if(it == name_map.end())
+        {
+            std::string trimmed = trim(node.UnderlyingProxy);
+            if(trimmed != node.UnderlyingProxy)
+                it = name_map.find(trimmed);
+        }
+
+        if(it != name_map.end())
+        {
+            node.UnderlyingProxy = it->second;
+            continue;
+        }
+
+        if(isBuiltinProxyName(node.UnderlyingProxy) || isBuiltinProxyName(trim(node.UnderlyingProxy)))
+            continue;
+
+        // Target filtered out or unknown: drop dangling dialer-proxy
+        node.UnderlyingProxy.clear();
+    }
+}
+
 void preprocessNodes(std::vector<Proxy> &nodes, extra_settings &ext)
 {
     std::for_each(nodes.begin(), nodes.end(), [&ext](Proxy &x)
@@ -486,6 +548,8 @@ void preprocessNodes(std::vector<Proxy> &nodes, extra_settings &ext)
         if(ext.add_emoji)
             x.Remark = addEmoji(x, ext.emoji_array, ext);
     });
+
+    // dialer-proxy remap runs after export finalizes Remark (append_proxy_type / processRemark)
 
     if(ext.sort_flag)
     {

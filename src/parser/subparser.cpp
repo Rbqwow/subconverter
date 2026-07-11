@@ -288,6 +288,7 @@ void commonConstruct(Proxy &node, ProxyType type, const std::string &group, cons
     node.Type = type;
     node.Group = group;
     node.Remark = remarks;
+    node.OriginalRemark = remarks;
     node.Hostname = server;
     node.UnderlyingProxy = underlying_proxy;
     node.Port = to_int(port);

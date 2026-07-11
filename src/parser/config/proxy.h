@@ -74,6 +74,7 @@ struct Proxy
     uint32_t GroupId = 0;
     String Group;
     String Remark;
+    String OriginalRemark; // parse-time node name; not changed by rename/emoji/processRemark
     String Hostname;
     uint16_t Port = 0;
 
