@@ -49,6 +49,20 @@ static bool isIntegerString(const std::string &value)
     return true;
 }
 
+// mihomo ws-opts early-data / http-upgrade fields (parsed into Proxy, must be re-emitted)
+// Take YAML::Node by value: operator[] returns a temporary handle (rvalue); Node is ref-counted.
+static void applyClashWsExtraOpts(YAML::Node ws_opts, const Proxy &x)
+{
+    if (x.WsMaxEarlyData > 0)
+        ws_opts["max-early-data"] = x.WsMaxEarlyData;
+    if (!x.WsEarlyDataHeaderName.empty())
+        ws_opts["early-data-header-name"] = x.WsEarlyDataHeaderName;
+    if (!x.V2rayHttpUpgrade.is_undef())
+        ws_opts["v2ray-http-upgrade"] = x.V2rayHttpUpgrade.get();
+    if (!x.V2rayHttpUpgradeFastOpen.is_undef())
+        ws_opts["v2ray-http-upgrade-fast-open"] = x.V2rayHttpUpgradeFastOpen.get();
+}
+
 // Restore bool/int scalars for mihomo xhttp-opts (stored as strings in Proxy::XHTTPOptions).
 static YAML::Node yamlScalarFromString(const std::string &value)
 {
@@ -414,6 +428,7 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
                         singleproxy["ws-opts"]["headers"]["Host"] = x.Host;
                     if(!x.Edge.empty())
                         singleproxy["ws-opts"]["headers"]["Edge"] = x.Edge;
+                    applyClashWsExtraOpts(singleproxy["ws-opts"], x);
                 }
                 else
                 {
@@ -531,6 +546,7 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
                 singleproxy["ws-opts"]["path"] = x.Path;
                 if(!x.Host.empty())
                     singleproxy["ws-opts"]["headers"]["Host"] = x.Host;
+                applyClashWsExtraOpts(singleproxy["ws-opts"], x);
                 break;
             }
             break;
@@ -737,6 +753,7 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
                             singleproxy["ws-opts"]["headers"]["Host"] = x.Host;
                         if(!x.Edge.empty())
                             singleproxy["ws-opts"]["headers"]["Edge"] = x.Edge;
+                        applyClashWsExtraOpts(singleproxy["ws-opts"], x);
                     }
                     else
                     {
