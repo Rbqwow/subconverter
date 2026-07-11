@@ -129,7 +129,9 @@ bool applyMatcher(const std::string &rule, std::string &real_rule, const Proxy &
         {ProxyType::WireGuard,    "WIREGUARD"},
         {ProxyType::Hysteria,     "HYSTERIA"},
         {ProxyType::Hysteria2,    "HYSTERIA2"},
-        {ProxyType::TUIC,    "TUIC"}
+        {ProxyType::TUIC,    "TUIC"},
+        {ProxyType::AnyTLS,    "ANYTLS"},
+        {ProxyType::VLESS,   "VLESS"}
     };
     if(startsWith(rule, "!!GROUP="))
     {
@@ -569,40 +571,54 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
             singleproxy["password"] = x.Password;
             if (!x.SNI.empty())
                 singleproxy["sni"] = x.SNI;
+            if (!x.Alpn.empty())
+                singleproxy["alpn"] = x.Alpn;
+            if (!x.Fingerprint.empty())
+                singleproxy["fingerprint"] = x.Fingerprint;
+            if (!x.ClientFingerprint.empty())
+                singleproxy["client-fingerprint"] = x.ClientFingerprint;
+            if (x.IdleSessionCheckInterval != 0)
+                singleproxy["idle-session-check-interval"] = x.IdleSessionCheckInterval;
+            if (x.IdleSessionTimeout != 0)
+                singleproxy["idle-session-timeout"] = x.IdleSessionTimeout;
+            if (x.MinIdleSession != 0)
+                singleproxy["min-idle-session"] = x.MinIdleSession;
             if (!scv.is_undef())
                 singleproxy["skip-cert-verify"] = scv.get();
             break;
-            case ProxyType::TUIC:
-                singleproxy["type"] = "tuic";
-                if (!x.UUID.empty())
-                    singleproxy["uuid"] = x.UUID;
-                if (!x.Password.empty())
-                    singleproxy["password"] = x.Password;
-                if (!x.HeartbeatInterval.empty())
-                    singleproxy["heartbeat-interval"] = x.HeartbeatInterval;
-                if (!x.Alpn.empty())
-                    singleproxy["alpn"] = x.Alpn;
-                if (!x.FastOpen.is_undef())
-                    singleproxy["fast-open"] = x.FastOpen.get();
-                if (!x.UdpRelayMode.empty())
-                    singleproxy["udp-relay-mode"] = x.UdpRelayMode;
-                if (!x.CongestionController.empty())
-                    singleproxy["congestion-controller"] = x.CongestionController;
-                if (!x.SNI.empty())
-                    singleproxy["sni"] = x.SNI;
-                if (!x.DisableSNI.is_undef())
-                    singleproxy["disable-sni"] = x.DisableSNI.get();
-                if (!x.ReduceRTT.is_undef())
-                    singleproxy["reduce-rtt"] = x.ReduceRTT.get();
-                if (x.RequestTimeout != 0)
-                    singleproxy["request-timeout"] = x.RequestTimeout;
-                if (x.MaxUdpRelayPacketSize != 0)
-                    singleproxy["max-udp-relay-packet-size"] = x.MaxUdpRelayPacketSize;
-                if (x.MaxOpenStreams != 0)
-                    singleproxy["max-open-streams"] = x.MaxOpenStreams;
-                if (!scv.is_undef())
-                    singleproxy["skip-cert-verify"] = scv.get();
-                break;
+        case ProxyType::TUIC:
+            singleproxy["type"] = "tuic";
+            if (!x.UUID.empty())
+                singleproxy["uuid"] = x.UUID;
+            if (!x.Password.empty())
+                singleproxy["password"] = x.Password;
+            if (!x.HeartbeatInterval.empty())
+                singleproxy["heartbeat-interval"] = x.HeartbeatInterval;
+            if (!x.Alpn.empty())
+                singleproxy["alpn"] = x.Alpn;
+            if (!x.FastOpen.is_undef())
+                singleproxy["fast-open"] = x.FastOpen.get();
+            if (!x.UdpRelayMode.empty())
+                singleproxy["udp-relay-mode"] = x.UdpRelayMode;
+            if (!x.CongestionController.empty())
+                singleproxy["congestion-controller"] = x.CongestionController;
+            if (!x.SNI.empty())
+                singleproxy["sni"] = x.SNI;
+            if (!x.DisableSNI.is_undef())
+                singleproxy["disable-sni"] = x.DisableSNI.get();
+            if (!x.ReduceRTT.is_undef())
+                singleproxy["reduce-rtt"] = x.ReduceRTT.get();
+            if (x.RequestTimeout != 0)
+                singleproxy["request-timeout"] = x.RequestTimeout;
+            if (x.MaxUdpRelayPacketSize != 0)
+                singleproxy["max-udp-relay-packet-size"] = x.MaxUdpRelayPacketSize;
+            if (x.MaxOpenStreams != 0)
+                singleproxy["max-open-streams"] = x.MaxOpenStreams;
+            if (x.MaxDatagramFrameSize != 0)
+                singleproxy["max-datagram-frame-size"] = x.MaxDatagramFrameSize;
+            if (!scv.is_undef())
+                singleproxy["skip-cert-verify"] = scv.get();
+            break;
 
         case ProxyType::VLESS:
             singleproxy["type"] = "vless";
@@ -2713,8 +2729,21 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                 if (!x.HeartbeatInterval.empty())
                     proxy.AddMember("heartbeat", rapidjson::StringRef(x.HeartbeatInterval.c_str()), allocator);
 
+                if (!x.UdpRelayMode.empty())
+                    proxy.AddMember("udp_relay_mode", rapidjson::StringRef(x.UdpRelayMode.c_str()), allocator);
+
+                if (!x.CongestionController.empty())
+                    proxy.AddMember("congestion_control", rapidjson::StringRef(x.CongestionController.c_str()), allocator);
+
+                if (!x.ReduceRTT.is_undef())
+                    proxy.AddMember("zero_rtt_handshake", x.ReduceRTT.get(), allocator);
+
                 rapidjson::Value tls(rapidjson::kObjectType);
                 tls.AddMember("enabled", true, allocator);
+                if (!x.SNI.empty())
+                    tls.AddMember("server_name", rapidjson::StringRef(x.SNI.c_str()), allocator);
+                if (!x.DisableSNI.is_undef())
+                    tls.AddMember("disable_sni", x.DisableSNI.get(), allocator);
                 if (!scv.is_undef())
                     tls.AddMember("insecure", scv.get(), allocator);
                 if (!x.Alpn.empty())
@@ -2723,23 +2752,7 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                     alpn.PushBack(rapidjson::StringRef(x.Alpn[0].c_str()), allocator);
                     tls.AddMember("alpn", alpn, allocator);
                 }
-
-                if (!x.UdpRelayMode.empty())
-                    proxy.AddMember("udp_relay_mode", rapidjson::StringRef(x.UdpRelayMode.c_str()), allocator);
-
-                if (!x.CongestionController.empty())
-                    proxy.AddMember("congestion_controller", rapidjson::StringRef(x.CongestionController.c_str()), allocator);
-
-                if (!x.SNI.empty())
-                    proxy.AddMember("sni", rapidjson::StringRef(x.SNI.c_str()), allocator);
-
-                if (!scv.is_undef())
-                {
-                    rapidjson::Value tls(rapidjson::kObjectType);
-                    tls.AddMember("enabled", true, allocator);
-                    tls.AddMember("insecure", scv.get(), allocator);
-                    proxy.AddMember("tls", tls, allocator);
-                }
+                proxy.AddMember("tls", tls, allocator);
 
                 break;
             }
@@ -2751,9 +2764,6 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                 if (!x.UUID.empty())
                     proxy.AddMember("uuid", rapidjson::StringRef(x.UUID.c_str()), allocator);
 
-                if (!x.SNI.empty())
-                    proxy.AddMember("sni", rapidjson::StringRef(x.SNI.c_str()), allocator);
-
                 if (x.XTLS == 2) {
                     proxy.AddMember("flow", rapidjson::StringRef("xtls-rprx-vision"), allocator);
                 } else if (!x.Flow.empty()) {
@@ -2762,11 +2772,11 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                 // TLS 配置
                 rapidjson::Value tls(rapidjson::kObjectType);
                 tls.AddMember("enabled", true, allocator);
+                if (!x.SNI.empty())
+                    tls.AddMember("server_name", rapidjson::StringRef(x.SNI.c_str()), allocator);
 
                 if (!scv.is_undef())
                     tls.AddMember("insecure", scv.get(), allocator);
-                if (!x.Fingerprint.empty())
-                    tls.AddMember("fingerprint", rapidjson::StringRef(x.Fingerprint.c_str()), allocator);
                 if (!x.Alpn.empty()) {
                     rapidjson::Value alpn(rapidjson::kArrayType);
                     for (const auto& item : x.Alpn)
@@ -2774,7 +2784,8 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                     tls.AddMember("alpn", alpn, allocator);
                 }
 
-                if (!x.PublicKey.empty() && !x.ShortID.empty()) {
+                const bool has_reality = !x.PublicKey.empty() && !x.ShortID.empty();
+                if (has_reality) {
                     rapidjson::Value reality(rapidjson::kObjectType);
                     reality.AddMember("enabled", true, allocator);
                     if (!x.PublicKey.empty())
@@ -2782,9 +2793,41 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                     if (!x.ShortID.empty())
                         reality.AddMember("short_id", rapidjson::StringRef(x.ShortID.c_str()), allocator);
                     tls.AddMember("reality", reality, allocator);
+                }
 
+                // Client uTLS fingerprint only (tls.utls). Do not emit illegal top-level tls.fingerprint.
+                std::string utls_fp = x.ClientFingerprint;
+                if (utls_fp.empty() && !x.Fingerprint.empty())
+                {
+                    switch (hash_(x.Fingerprint))
+                    {
+                    case "chrome"_hash:
+                    case "firefox"_hash:
+                    case "edge"_hash:
+                    case "safari"_hash:
+                    case "360"_hash:
+                    case "qq"_hash:
+                    case "ios"_hash:
+                    case "android"_hash:
+                    case "random"_hash:
+                    case "randomized"_hash:
+                        utls_fp = x.Fingerprint;
+                        break;
+                    default:
+                        break;
+                    }
+                }
+                if (!utls_fp.empty())
+                {
                     rapidjson::Value utls(rapidjson::kObjectType);
-                    utls.AddMember("enabled",true,allocator);
+                    utls.AddMember("enabled", true, allocator);
+                    utls.AddMember("fingerprint", rapidjson::Value(utls_fp.c_str(), allocator), allocator);
+                    tls.AddMember("utls", utls, allocator);
+                }
+                else if (has_reality)
+                {
+                    rapidjson::Value utls(rapidjson::kObjectType);
+                    utls.AddMember("enabled", true, allocator);
                     std::array<std::string, 6> fingerprints = {"chrome", "firefox", "safari", "ios", "edge", "qq"};
                     utls.AddMember("fingerprint", rapidjson::Value(fingerprints[rand() % fingerprints.size()].c_str(), allocator), allocator);
                     tls.AddMember("utls", utls, allocator);
@@ -2818,18 +2861,46 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
             case ProxyType::AnyTLS:
             {
                 addSingBoxCommonMembers(proxy, x, "anytls", allocator);
-                rapidjson::Value users(rapidjson::kArrayType);
-                rapidjson::Value user(rapidjson::kObjectType);
-                user.AddMember("username", "sekai", allocator);
-                user.AddMember("password", rapidjson::StringRef(x.Password.c_str()), allocator);
-                users.PushBack(user, allocator);
-                proxy.AddMember("users", users, allocator);
+
+                if (!x.Password.empty())
+                    proxy.AddMember("password", rapidjson::StringRef(x.Password.c_str()), allocator);
+
+                if (x.IdleSessionCheckInterval)
+                    proxy.AddMember("idle_session_check_interval", rapidjson::Value(formatSingBoxInterval(x.IdleSessionCheckInterval).c_str(), allocator), allocator);
+                if (x.IdleSessionTimeout)
+                    proxy.AddMember("idle_session_timeout", rapidjson::Value(formatSingBoxInterval(x.IdleSessionTimeout).c_str(), allocator), allocator);
+                if (x.MinIdleSession)
+                    proxy.AddMember("min_idle_session", x.MinIdleSession, allocator);
+
+                rapidjson::Value tls(rapidjson::kObjectType);
+                tls.AddMember("enabled", true, allocator);
+                if (!x.SNI.empty())
+                    tls.AddMember("server_name", rapidjson::StringRef(x.SNI.c_str()), allocator);
+                if (!scv.is_undef())
+                    tls.AddMember("insecure", scv.get(), allocator);
+                if (!x.Alpn.empty())
+                {
+                    rapidjson::Value alpn(rapidjson::kArrayType);
+                    for (const auto& item : x.Alpn)
+                        alpn.PushBack(rapidjson::StringRef(item.c_str()), allocator);
+                    tls.AddMember("alpn", alpn, allocator);
+                }
+                // Client uTLS only; never map cert fingerprint to insecure.
+                if (!x.ClientFingerprint.empty())
+                {
+                    rapidjson::Value utls(rapidjson::kObjectType);
+                    utls.AddMember("enabled", true, allocator);
+                    utls.AddMember("fingerprint", rapidjson::Value(x.ClientFingerprint.c_str(), allocator), allocator);
+                    tls.AddMember("utls", utls, allocator);
+                }
+                proxy.AddMember("tls", tls, allocator);
+
                 break;
             }
             default:
                 continue;
         }
-        if (x.TLSSecure)
+        if (x.TLSSecure && x.Type != ProxyType::TUIC && x.Type != ProxyType::AnyTLS && x.Type != ProxyType::VLESS)
         {
             rapidjson::Value tls(rapidjson::kObjectType);
             tls.AddMember("enabled", true, allocator);

@@ -109,6 +109,25 @@ void tuicConstruct(
         const std::string &underlying_proxy = ""
         );
 
+void anyTLSConstruct(
+        Proxy &node,
+        const std::string &group,
+        const std::string &remarks,
+        const std::string &server,
+        const std::string &port,
+        const std::string &password,
+        const std::string &sni,
+        const std::string &alpn,
+        const std::string &fingerprint,
+        const std::string &idle_session_check_interval,
+        const std::string &idle_session_timeout,
+        const std::string &min_idle_session,
+        tribool udp,
+        tribool tfo,
+        tribool scv,
+        const std::string &underlying_proxy = ""
+);
+
 void vlessConstruct(
         Proxy &node,
         const std::string &group,

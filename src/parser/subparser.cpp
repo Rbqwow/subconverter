@@ -264,6 +264,11 @@ void anyTLSConstruct(
     const std::string &port,
     const std::string &password,
     const std::string &sni,
+    const std::string &alpn,
+    const std::string &fingerprint,
+    const std::string &idle_session_check_interval,
+    const std::string &idle_session_timeout,
+    const std::string &min_idle_session,
     tribool udp,
     tribool tfo,
     tribool scv,
@@ -273,6 +278,13 @@ void anyTLSConstruct(
     node.TLSSecure = true;
     node.Password = password;
     node.SNI = sni;
+    if (!alpn.empty()) {
+        node.Alpn = StringArray{alpn};
+    }
+    node.Fingerprint = fingerprint;
+    node.IdleSessionCheckInterval = to_int(idle_session_check_interval);
+    node.IdleSessionTimeout = to_int(idle_session_timeout);
+    node.MinIdleSession = to_int(min_idle_session);
 }
 
 void tuicConstruct(
@@ -1238,6 +1250,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
         std::string obfs_password, cwnd; //hysteria2
         std::string uuid, heartbeat_interval, disable_sni, reduce_rtt, request_timeout, udp_relay_mode, congestion_controller, max_udp_relay_packet_size, max_open_streams, fast_open;   //TUIC
         std::string flow, xtls, short_id;
+        std::string idle_session_check_interval, idle_session_timeout, min_idle_session;
         // New parameters from mihomo
         std::string ip_version, client_fingerprint, ech_config, certificate, private_key_pem, vless_encryption;
         std::string smux_protocol, ws_early_data_header_name, http_method, trojan_ss_method, trojan_ss_password;
@@ -1400,7 +1413,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             tls = safe_as<std::string>(singleproxy["tls"]) == "true" ? "tls" : "";
 
             vlessConstruct(node, group, ps, server, port, uuid, sni, alpn, type, net, mode, host, path, fingerprint, flow, xtls, public_key, short_id, client_fingerprint, udp, tfo, scv, underlying_proxy);
-            node.TLSSecure = tls == "tls";
+            // Align with link parse: reality implies TLS even when tls: true is omitted
+            node.TLSSecure = (tls == "tls") || !public_key.empty() || singleproxy["reality-opts"].IsDefined();
             // Assign new parameters to node for VLESS
             node.IpVersion = ip_version;
             node.EchEnable = ech_enable;
@@ -1745,8 +1759,16 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             group = ANYTLS_DEFAULT_GROUP;
             singleproxy["password"] >>= password;
             singleproxy["sni"] >>= sni;
+            if (singleproxy["alpn"].IsSequence())
+                singleproxy["alpn"][0] >>= alpn;
+            else
+                singleproxy["alpn"] >>= alpn;
+            singleproxy["fingerprint"] >>= fingerprint;
+            singleproxy["idle-session-check-interval"] >>= idle_session_check_interval;
+            singleproxy["idle-session-timeout"] >>= idle_session_timeout;
+            singleproxy["min-idle-session"] >>= min_idle_session;
 
-            anyTLSConstruct(node, group, ps, server, port, password, sni, udp, tfo, scv, underlying_proxy);
+            anyTLSConstruct(node, group, ps, server, port, password, sni, alpn, fingerprint, idle_session_check_interval, idle_session_timeout, min_idle_session, udp, tfo, scv, underlying_proxy);
 
             // Assign new parameters to node for AnyTLS
             node.IpVersion = ip_version;
@@ -1985,35 +2007,74 @@ void explodeHysteria2(std::string hysteria2, Proxy &node) {
     }
 }
 
-void explodeAnyTLS(std::string anytls, Proxy &node) {
-    std::string add, port, password, sni, remarks;
-    std::string addition;
-    tribool udp, scv;
+void explodeStdAnyTLS(std::string anytls, Proxy &node) {
+    std::string add, port, password, sni, alpn, fingerprint, remarks, addition, idle_session_check_interval, idle_session_timeout, min_idle_session;
+    tribool tfo, scv, udp;
 
-    anytls = anytls.substr(9);
+    anytls = anytls.substr(9);  // 去除 anytls://
     string_size pos;
-    pos = anytls.rfind('#');
-    if (pos != std::string::npos) {
+
+    pos = anytls.rfind("#");
+    if (pos != anytls.npos) {
         remarks = urlDecode(anytls.substr(pos + 1));
         anytls.erase(pos);
     }
 
-    pos = anytls.rfind('?');
-    if (pos != std::string::npos) {
+    pos = anytls.rfind("?");
+    if (pos != anytls.npos) {
         addition = anytls.substr(pos + 1);
         anytls.erase(pos);
     }
 
-    if (regGetMatch(anytls, R"(^(.*?)@(.*)[:](\d+)$)", 4, 0, &password, &add, &port))
-        return;
+    // 支持 user:pass@host:port
+    if (strFind(anytls, "@")) {
+        if (regGetMatch(anytls, R"(^(.*?)@(.*?):(\d+)$)", 4, 0, &password, &add, &port))
+            return;
+    } else {
+        password = getUrlArg(addition, "password");
+        if (password.empty()) return;
+
+        if (!strFind(anytls, ":")) return;
+        if (regGetMatch(anytls, R"(^(.*?):(\d+)$)", 3, 0, &add, &port)) return;
+    }
+
     if (port == "0")
         return;
+
+    // 其他参数
     sni = getUrlArg(addition, "sni");
+    if (sni.empty())
+        sni = getUrlArg(addition, "peer");
+    alpn = getUrlArg(addition, "alpn");
+    fingerprint = urlDecode(getUrlArg(addition, "hpkp"));
+    idle_session_check_interval = getUrlArg(addition, "idle-session-check-interval");
+    if (idle_session_check_interval.empty())
+        idle_session_check_interval = getUrlArg(addition, "idle_session_check_interval");
+    idle_session_timeout = getUrlArg(addition, "idle-session-timeout");
+    if (idle_session_timeout.empty())
+        idle_session_timeout = getUrlArg(addition, "idle_session_timeout");
+    min_idle_session = getUrlArg(addition, "min-idle-session");
+    if (min_idle_session.empty())
+        min_idle_session = getUrlArg(addition, "min_idle_session");
     udp = getUrlArg(addition, "udp");
-    scv = getUrlArg(addition, "insecure");
+    tfo = tribool(getUrlArg(addition, "tfo"));
+    scv = tribool(getUrlArg(addition, "insecure"));
+
     if (remarks.empty())
         remarks = add + ":" + port;
-    anyTLSConstruct(node, ANYTLS_DEFAULT_GROUP, remarks, add, port, password, sni, udp, tribool(), scv, "");
+
+    anyTLSConstruct(node, ANYTLS_DEFAULT_GROUP, remarks, add, port, password, sni, alpn, fingerprint, idle_session_check_interval, idle_session_timeout, min_idle_session, udp, tfo, scv, "");
+}
+
+void explodeAnyTLS(std::string anytls, Proxy &node) {
+    anytls = regReplace(anytls, "(anytls)://", "anytls://");
+
+    // replace /? with ?
+    anytls = regReplace(anytls, "/\\?", "?", true, false);
+    if (regMatch(anytls, "anytls://(.*?)[:](.*)")) {
+        explodeStdAnyTLS(anytls, node);
+        return;
+    }
 }
 
 void explodeStdTuic(std::string tuic, Proxy &node) {
@@ -2050,7 +2111,7 @@ void explodeStdTuic(std::string tuic, Proxy &node) {
         if (!strFind(tuic, ":"))
             return;
 
-        if (regGetMatch(tuic, R"(^(.*?):(\d+)$)", 3, 0, &ip, &port))
+        if (regGetMatch(tuic, R"(^(.*?):(\d+)$)", 3, 0, &add, &port))
             return;
     }
 
@@ -2089,7 +2150,7 @@ void explodeTUIC(std::string tuic, Proxy &node) {
 }
 
 void explodeStdVLESS(std::string vless, Proxy &node) {
-    std::string add, port, uuid, sni, alpn, net, type, mode, host, path, fingerprint, remarks, addition, flow, xtls, public_key, short_id, security, tls;
+    std::string add, port, uuid, sni, alpn, net, type, mode, host, path, fingerprint, client_fingerprint, remarks, addition, flow, xtls, public_key, short_id, security, tls;
     tribool tfo, scv;
     std::string decoded, userinfo, hostinfo;
     string_array user_parts;
@@ -2145,8 +2206,16 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
             sni = getUrlArg(addition, "peer");
         }
         net = getUrlArg(addition,"type");
+        if (net.empty())
+            net = "tcp"; // align with vlessConstruct default when type is omitted
         alpn = getUrlArg(addition, "alpn");
+        // hpkp/pcs: certificate pin; fp/fingerprint: TLS ClientHello (uTLS) fingerprint per Xray share-link standard
         fingerprint = getUrlArg(addition, "hpkp");
+        if (fingerprint.empty())
+            fingerprint = getUrlArg(addition, "pcs");
+        client_fingerprint = getUrlArg(addition, "fp");
+        if (client_fingerprint.empty())
+            client_fingerprint = getUrlArg(addition, "fingerprint");
         flow = getUrlArg(addition, "flow");
         xtls = getUrlArg(addition, "xtls");
         public_key = getUrlArg(addition, "pbk");
@@ -2191,7 +2260,7 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
     if (remarks.empty())
         remarks = add + ":" + port;
     node.TLSSecure = security == "tls" || security == "reality";
-    vlessConstruct(node, VLESS_DEFAULT_GROUP, remarks, add, port, uuid, sni, alpn, type, net, mode, host, path, fingerprint, flow, xtls, public_key, short_id, "", tribool(), tfo, scv, "");
+    vlessConstruct(node, VLESS_DEFAULT_GROUP, remarks, add, port, uuid, sni, alpn, type, net, mode, host, path, fingerprint, flow, xtls, public_key, short_id, client_fingerprint, tribool(), tfo, scv, "");
 }
 
 void explodeVLESS(std::string vless, Proxy &node) {
@@ -2727,7 +2796,7 @@ bool explodeSurge(std::string surge, std::vector<Proxy> &nodes)
                 }
             }
 
-            anyTLSConstruct(node, ANYTLS_DEFAULT_GROUP, remarks, server, port, password, host, udp, tfo, scv, "");
+            anyTLSConstruct(node, ANYTLS_DEFAULT_GROUP, remarks, server, port, password, host, "", "", "", "", "", udp, tfo, scv, "");
             break;
         default:
             switch(hash_(remarks))
@@ -3047,6 +3116,8 @@ bool explodeSurge(std::string surge, std::vector<Proxy> &nodes)
                             break;
                     }
                 }
+                anyTLSConstruct(node, ANYTLS_DEFAULT_GROUP, remarks, server, port, password, host, "", "", "", "", "", udp, tfo, scv, "");
+                break;
             default:
                 continue;
             }
@@ -3208,7 +3279,7 @@ void explode(const std::string &link, Proxy &node)
         explodeHysteria2(link, node);
     else if (startsWith(link, "anytls://"))
         explodeAnyTLS(link, node);
-    else if (strFind(link, "tuic://") || strFind(link, "tuic://"))
+    else if (strFind(link, "tuic://"))
         explodeTUIC(link, node);
     else if (strFind(link, "vless://"))
         explodeVLESS(link, node);
