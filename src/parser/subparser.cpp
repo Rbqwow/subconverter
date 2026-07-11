@@ -177,6 +177,46 @@ bool yamlNodeIsTruthy(const YAML::Node &node)
     return s == "true" || s == "1" || s == "tls" || s == "TRUE" || s == "True";
 }
 
+// Keep full ALPN list (e.g. [h2, http/1.1]); never keep only the first entry.
+void parseAlpnFromYaml(const YAML::Node &node, StringArray &out)
+{
+    out.clear();
+    if (!node.IsDefined() || node.IsNull())
+        return;
+
+    auto push_one = [&out](std::string s)
+    {
+        s = trim(s);
+        if (s.empty())
+            return;
+        std::string decoded = urlDecode(s);
+        if (!decoded.empty())
+            s = decoded;
+        if (s.find(',') != std::string::npos)
+        {
+            for (auto &part : split(s, ","))
+            {
+                part = trim(part);
+                if (!part.empty())
+                    out.push_back(part);
+            }
+        }
+        else
+        {
+            out.push_back(s);
+        }
+    };
+
+    if (node.IsSequence())
+    {
+        for (auto it = node.begin(); it != node.end(); ++it)
+            push_one(yamlNodeToString(*it));
+        return;
+    }
+    if (node.IsScalar())
+        push_one(yamlNodeToString(node));
+}
+
 std::string rapidjsonValueToString(const rapidjson::Value &value)
 {
     if (value.IsObject() || value.IsArray())
@@ -1620,10 +1660,9 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             singleproxy["uuid"] >>= uuid;
             singleproxy["servername"] >>= sni;
             net = singleproxy["network"].IsDefined() ? safe_as<std::string>(singleproxy["network"]) : "tcp";
-            if (singleproxy["alpn"].IsSequence())
-                singleproxy["alpn"][0] >>= alpn;
-            else
-                singleproxy["alpn"] >>= alpn;
+            StringArray alpn_list;
+            parseAlpnFromYaml(singleproxy["alpn"], alpn_list);
+            alpn = alpn_list.empty() ? "" : alpn_list[0];
             singleproxy["fingerprint"] >>= fingerprint;
             singleproxy["flow"] >>= flow;
             if (singleproxy["flow"].IsDefined())
@@ -1680,6 +1719,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             tls = yamlNodeIsTruthy(singleproxy["tls"]) ? "tls" : "";
 
             vlessConstruct(node, group, ps, server, port, uuid, sni, alpn, type, net, mode, host, path, fingerprint, flow, xtls, public_key, short_id, client_fingerprint, udp, tfo, scv, underlying_proxy);
+            if (!alpn_list.empty())
+                node.Alpn = alpn_list;
             // Align with link parse: reality implies TLS even when tls: true is omitted
             node.TLSSecure = (tls == "tls") || !public_key.empty() || singleproxy["reality-opts"].IsDefined();
             // Assign new parameters to node for VLESS
@@ -1945,7 +1986,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
 
             wireguardConstruct(node, group, ps, server, port, ip, ipv6, private_key, public_key, password, dns_server, mtu, "0", "", "", udp, underlying_proxy);
             break;
-        case "hysteria"_hash:
+        case "hysteria"_hash: {
             group = HYSTERIA_DEFAULT_GROUP;
             singleproxy["ports"] >>= ports;
             singleproxy["protocol"] >>= protocol;
@@ -1961,10 +2002,9 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             singleproxy["obfs"] >>= obfs;
             singleproxy["sni"] >>= sni;
             singleproxy["fingerprint"] >>= fingerprint;
-            if (singleproxy["alpn"].IsSequence())
-                singleproxy["alpn"][0] >>= alpn;
-            else
-                singleproxy["alpn"] >>= alpn;
+            StringArray hy_alpn_list;
+            parseAlpnFromYaml(singleproxy["alpn"], hy_alpn_list);
+            alpn = hy_alpn_list.empty() ? "" : hy_alpn_list[0];
             singleproxy["ca"] >>= ca;
             singleproxy["ca-str"] >>= ca_str;
             singleproxy["recv-window-conn"] >>= recv_window_conn;
@@ -1975,6 +2015,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             singleproxy["hop-interval"] >>= hop_interval;
 
             hysteriaConstruct(node, group, ps, server, port, ports, protocol, obfs_protocol, up, up_speed, down, down_speed, auth, auth_str, obfs, sni, fingerprint, ca, ca_str, recv_window_conn, recv_window, disable_mtu_discovery, hop_interval, alpn, tfo, scv, underlying_proxy);
+            if (!hy_alpn_list.empty())
+                node.Alpn = hy_alpn_list;
 
             // Assign new parameters to node for Hysteria
             node.IpVersion = ip_version;
@@ -1985,7 +2027,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             node.PrivateKeyPem = private_key_pem;
             node.FastOpen = safe_as<std::string>(singleproxy["fast-open"]);
             break;
-        case "hysteria2"_hash:
+            }
+        case "hysteria2"_hash: {
             group = HYSTERIA2_DEFAULT_GROUP;
             // Keep port ranges as raw strings (e.g. "35000-39000"); never to_int/atoi
             ports = yamlNodeToString(singleproxy["ports"]);
@@ -2003,15 +2046,16 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             obfs_password = yamlNodeToString(singleproxy["obfs-password"]);
             sni = yamlNodeToString(singleproxy["sni"]);
             fingerprint = yamlNodeToString(singleproxy["fingerprint"]);
-            if (singleproxy["alpn"].IsSequence())
-                alpn = yamlNodeToString(singleproxy["alpn"][0]);
-            else
-                alpn = yamlNodeToString(singleproxy["alpn"]);
+            StringArray hy2_alpn_list;
+            parseAlpnFromYaml(singleproxy["alpn"], hy2_alpn_list);
+            alpn = hy2_alpn_list.empty() ? "" : hy2_alpn_list[0];
             ca = yamlNodeToString(singleproxy["ca"]);
             ca_str = yamlNodeToString(singleproxy["ca-str"]);
             cwnd = yamlNodeToString(singleproxy["cwnd"]);
             hop_interval = yamlNodeToString(singleproxy["hop-interval"]);
             hysteria2Construct(node, group, ps, server, port, ports, up, down, password, obfs, obfs_password, sni, fingerprint, alpn, ca, ca_str, cwnd, hop_interval, udp, tfo, scv, underlying_proxy);
+            if (!hy2_alpn_list.empty())
+                node.Alpn = hy2_alpn_list;
 
             // Assign new parameters to node for Hysteria2
             node.IpVersion = ip_version;
@@ -2032,20 +2076,22 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             if(singleproxy["udp-mtu"].IsDefined())
                 node.UdpMTU = to_int(safe_as<std::string>(singleproxy["udp-mtu"]));
             break;
-        case "anytls"_hash:
+            }
+        case "anytls"_hash: {
             group = ANYTLS_DEFAULT_GROUP;
             singleproxy["password"] >>= password;
             singleproxy["sni"] >>= sni;
-            if (singleproxy["alpn"].IsSequence())
-                singleproxy["alpn"][0] >>= alpn;
-            else
-                singleproxy["alpn"] >>= alpn;
+            StringArray anytls_alpn_list;
+            parseAlpnFromYaml(singleproxy["alpn"], anytls_alpn_list);
+            alpn = anytls_alpn_list.empty() ? "" : anytls_alpn_list[0];
             singleproxy["fingerprint"] >>= fingerprint;
             singleproxy["idle-session-check-interval"] >>= idle_session_check_interval;
             singleproxy["idle-session-timeout"] >>= idle_session_timeout;
             singleproxy["min-idle-session"] >>= min_idle_session;
 
             anyTLSConstruct(node, group, ps, server, port, password, sni, alpn, fingerprint, idle_session_check_interval, idle_session_timeout, min_idle_session, udp, tfo, scv, underlying_proxy);
+            if (!anytls_alpn_list.empty())
+                node.Alpn = anytls_alpn_list;
 
             // Assign new parameters to node for AnyTLS
             node.IpVersion = ip_version;
@@ -2053,16 +2099,16 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             node.Certificate = certificate;
             node.PrivateKeyPem = private_key_pem;
             break;
-        case "tuic"_hash:
+            }
+        case "tuic"_hash: {
             group = TUIC_DEFAULT_GROUP;
             singleproxy["uuid"] >>= uuid;
             singleproxy["ip"] >>= ip;
             singleproxy["password"] >>= password;
             singleproxy["heartbeat_interval"] >>= heartbeat_interval;
-            if (singleproxy["alpn"].IsSequence())
-                singleproxy["alpn"][0] >>= alpn;
-            else
-                singleproxy["alpn"] >>= alpn;
+            StringArray tuic_alpn_list;
+            parseAlpnFromYaml(singleproxy["alpn"], tuic_alpn_list);
+            alpn = tuic_alpn_list.empty() ? "" : tuic_alpn_list[0];
             singleproxy["disable-sni"] >>= disable_sni;
             singleproxy["reduce-rtt"] >>= reduce_rtt;
             singleproxy["request-timeout"] >>= request_timeout;
@@ -2073,6 +2119,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             singleproxy["sni"] >>= sni;
             singleproxy["fast-open"] >>= fast_open;
             tuicConstruct(node, group, ps, server, port, uuid, password, ip, heartbeat_interval, alpn, disable_sni, reduce_rtt, request_timeout, udp_relay_mode, congestion_controller, max_udp_relay_packet_size, max_open_streams, sni, fast_open, tfo, scv, underlying_proxy);
+            if (!tuic_alpn_list.empty())
+                node.Alpn = tuic_alpn_list;
 
             // Assign new parameters to node for TUIC
             node.IpVersion = ip_version;
@@ -2086,6 +2134,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             if(singleproxy["max-datagram-frame-size"].IsDefined())
                 node.MaxDatagramFrameSize = to_int(safe_as<std::string>(singleproxy["max-datagram-frame-size"]));
             break;
+            }
         default:
             continue;
         }
