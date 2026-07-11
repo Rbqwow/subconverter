@@ -2863,17 +2863,6 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                 proxy.AddMember("password", rapidjson::StringRef(x.Password.c_str()), allocator);
                 break;
             }
-            case ProxyType::AnyTLS:
-            {
-                addSingBoxCommonMembers(proxy, x, "anytls", allocator);
-                rapidjson::Value users(rapidjson::kArrayType);
-                rapidjson::Value user(rapidjson::kObjectType);
-                user.AddMember("username", "sekai", allocator);
-                user.AddMember("password", rapidjson::StringRef(x.Password.c_str()), allocator);
-                users.PushBack(user, allocator);
-                proxy.AddMember("users", users, allocator);
-                break;
-            }
             default:
                 continue;
         }
