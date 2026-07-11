@@ -1600,6 +1600,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             singleproxy["cipher"] >>= cipher;
             net = singleproxy["network"].IsDefined() ? safe_as<std::string>(singleproxy["network"]) : "tcp";
             singleproxy["servername"] >>= sni;
+            if (sni.empty())
+                singleproxy["sni"] >>= sni;
             switch(hash_(net))
             {
             case "http"_hash:
@@ -1659,6 +1661,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             group = VLESS_DEFAULT_GROUP;
             singleproxy["uuid"] >>= uuid;
             singleproxy["servername"] >>= sni;
+            if (sni.empty())
+                singleproxy["sni"] >>= sni;
             net = singleproxy["network"].IsDefined() ? safe_as<std::string>(singleproxy["network"]) : "tcp";
             StringArray alpn_list;
             parseAlpnFromYaml(singleproxy["alpn"], alpn_list);
@@ -1904,8 +1908,12 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             singleproxy["username"] >>= user;
             singleproxy["password"] >>= password;
             singleproxy["tls"] >>= tls;
+            // HTTP(S) TLS SNI (mihomo: sni under type: http)
+            singleproxy["sni"] >>= sni;
 
             httpConstruct(node, group, ps, server, port, user, password, tls == "true", tfo, scv, tribool(), underlying_proxy);
+            if (!sni.empty())
+                node.SNI = sni;
 
             // Assign new parameters to node for HTTP
             node.IpVersion = ip_version;
