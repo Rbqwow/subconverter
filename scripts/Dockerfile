@@ -1,5 +1,5 @@
 FROM alpine:3.16 AS builder
-LABEL maintainer="metacubex.official@gmail.com"
+LABEL maintainer="rbqwow"
 ARG THREADS="4"
 ARG SHA=""
 
@@ -30,7 +30,7 @@ RUN set -xe && \
     install -d /usr/include/date/ && \
     install -m644 libcron/externals/date/include/date/* /usr/include/date/ && \
     cd .. && \
-    git clone https://github.com/ToruNiina/toml11 --branch="v4.3.0" --depth=1 && \
+    git clone https://github.com/ToruNiina/toml11 --branch="v4.4.0" --depth=1 && \
     cd toml11 && \
     cmake -DCMAKE_CXX_STANDARD=11 . && \
     make install -j $THREADS && \
@@ -46,7 +46,7 @@ RUN set -xe && \
 
 # build final image
 FROM alpine:3.16
-LABEL maintainer="metacubex.official@gmail.com"
+LABEL maintainer="rbqwow"
 
 RUN apk add --no-cache --virtual subconverter-deps pcre2 libcurl yaml-cpp
 

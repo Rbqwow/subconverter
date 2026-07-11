@@ -3086,6 +3086,8 @@ bool explodeSurge(std::string surge, std::vector<Proxy> &nodes)
                             break;
                     }
                 }
+                anytlsConstruct(node, ANYTLS_DEFAULT_GROUP, remarks, server, port, password, host, "", "", "", "", "", tfo, scv, "");
+                break;
             default:
                 continue;
             }

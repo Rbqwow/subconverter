@@ -2725,6 +2725,15 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                 if (!x.HeartbeatInterval.empty())
                     proxy.AddMember("heartbeat", rapidjson::StringRef(x.HeartbeatInterval.c_str()), allocator);
 
+                if (!x.UdpRelayMode.empty())
+                    proxy.AddMember("udp_relay_mode", rapidjson::StringRef(x.UdpRelayMode.c_str()), allocator);
+
+                if (!x.CongestionController.empty())
+                    proxy.AddMember("congestion_controller", rapidjson::StringRef(x.CongestionController.c_str()), allocator);
+
+                if (!x.SNI.empty())
+                    proxy.AddMember("sni", rapidjson::StringRef(x.SNI.c_str()), allocator);
+
                 rapidjson::Value tls(rapidjson::kObjectType);
                 tls.AddMember("enabled", true, allocator);
                 if (!scv.is_undef())
@@ -2735,23 +2744,7 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
                     alpn.PushBack(rapidjson::StringRef(x.Alpn[0].c_str()), allocator);
                     tls.AddMember("alpn", alpn, allocator);
                 }
-
-                if (!x.UdpRelayMode.empty())
-                    proxy.AddMember("udp_relay_mode", rapidjson::StringRef(x.UdpRelayMode.c_str()), allocator);
-
-                if (!x.CongestionController.empty())
-                    proxy.AddMember("congestion_controller", rapidjson::StringRef(x.CongestionController.c_str()), allocator);
-
-                if (!x.SNI.empty())
-                    proxy.AddMember("sni", rapidjson::StringRef(x.SNI.c_str()), allocator);
-
-                if (!scv.is_undef())
-                {
-                    rapidjson::Value tls(rapidjson::kObjectType);
-                    tls.AddMember("enabled", true, allocator);
-                    tls.AddMember("insecure", scv.get(), allocator);
-                    proxy.AddMember("tls", tls, allocator);
-                }
+                proxy.AddMember("tls", tls, allocator);
 
                 break;
             }
@@ -2866,7 +2859,7 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
             default:
                 continue;
         }
-        if (x.TLSSecure)
+        if (x.TLSSecure && x.Type != ProxyType::TUIC && x.Type != ProxyType::AnyTLS && x.Type != ProxyType::VLESS)
         {
             rapidjson::Value tls(rapidjson::kObjectType);
             tls.AddMember("enabled", true, allocator);
