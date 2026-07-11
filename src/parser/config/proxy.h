@@ -1,6 +1,7 @@
 #ifndef PROXY_H_INCLUDED
 #define PROXY_H_INCLUDED
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -8,6 +9,7 @@
 
 using String = std::string;
 using StringArray = std::vector<String>;
+using StringMap = std::map<String, String>;
 
 enum class ProxyType
 {
@@ -212,6 +214,13 @@ struct Proxy
     // HTTP options for VLESS
     String HttpMethod;
     StringArray HttpPath;
+
+    // XHTTP (VLESS-only) flat options: mode, x-padding-bytes, sc-*, session-*, ...
+    StringMap XHTTPOptions;
+    // Nested XHTTP subtrees stored as YAML text for lossless Clash round-trip
+    String XHTTPDownloadSettings;
+    String XHTTPReuseSettings;
+    StringMap XHTTPHeaders;
 
     // Hysteria2 additional options
     tribool HopIntervalTribool;          // Already have HopInterval as uint32_t, adding tribool version for better support

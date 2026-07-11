@@ -30,6 +30,73 @@ const string_array clashr_protocols = {"origin", "auth_sha1_v4", "auth_aes128_md
 const string_array clashr_obfs = {"plain", "http_simple", "http_post", "random_head", "tls1.2_ticket_auth", "tls1.2_ticket_fastauth"};
 const string_array clash_ssr_ciphers = {"rc4-md5", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "aes-128-cfb", "aes-192-cfb", "aes-256-cfb", "chacha20-ietf", "xchacha20", "none"};
 
+static bool isIntegerString(const std::string &value)
+{
+    if (value.empty())
+        return false;
+    size_t i = 0;
+    if (value[0] == '-' || value[0] == '+')
+    {
+        if (value.size() == 1)
+            return false;
+        i = 1;
+    }
+    for (; i < value.size(); i++)
+    {
+        if (!std::isdigit(static_cast<unsigned char>(value[i])))
+            return false;
+    }
+    return true;
+}
+
+// Restore bool/int scalars for mihomo xhttp-opts (stored as strings in Proxy::XHTTPOptions).
+static YAML::Node yamlScalarFromString(const std::string &value)
+{
+    YAML::Node node;
+    if (value == "true")
+        node = true;
+    else if (value == "false")
+        node = false;
+    else if (isIntegerString(value))
+        node = to_int(value);
+    else
+        node = value;
+    return node;
+}
+
+// Nested xhttp subtrees are stored as YAML (Clash) or JSON (share-link extra); both load via YAML.
+static YAML::Node loadNestedYamlOrJson(const std::string &text)
+{
+    if (text.empty())
+        return YAML::Node(YAML::NodeType::Undefined);
+    try
+    {
+        return YAML::Load(text);
+    }
+    catch (...)
+    {
+        return YAML::Node(YAML::NodeType::Undefined);
+    }
+}
+
+// Node flags first; global ext only fills when node left the value undefined.
+static void applyNodePrefFlags(const Proxy &x, const extra_settings &ext, tribool &udp, tribool &tfo, tribool &scv)
+{
+    udp = x.UDP;
+    tfo = x.TCPFastOpen;
+    scv = x.AllowInsecure;
+    udp.define(ext.udp);
+    tfo.define(ext.tfo);
+    scv.define(ext.skip_cert_verify);
+}
+
+static void applyNodePrefFlags(const Proxy &x, const extra_settings &ext, tribool &udp, tribool &tfo, tribool &scv, tribool &tls13)
+{
+    applyNodePrefFlags(x, ext, udp, tfo, scv);
+    tls13 = x.TLS13;
+    tls13.define(ext.tls13);
+}
+
 std::string vmessLinkConstruct(const std::string &remarks, const std::string &add, const std::string &port, const std::string &type, const std::string &id, const std::string &aid, const std::string &net, const std::string &path, const std::string &host, const std::string &tls)
 {
     rapidjson::StringBuffer sb;
@@ -275,10 +342,8 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
 
         processRemark(x.Remark, remarks_list, false);
 
-        tribool udp = ext.udp, tfo = ext.tfo, scv = ext.skip_cert_verify;
-        udp.define(x.UDP);
-        tfo.define(x.TCPFastOpen);
-        scv.define(x.AllowInsecure);
+        tribool udp, tfo, scv;
+        applyNodePrefFlags(x, ext, udp, tfo, scv);
 
         singleproxy["name"] = x.Remark;
         singleproxy["server"] = trimOf(trimOf(x.Hostname, '['), ']');
@@ -555,6 +620,10 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
                 singleproxy["sni"] = x.SNI;
             if (!scv.is_undef())
                 singleproxy["skip-cert-verify"] = scv.get();
+            if (!x.Fingerprint.empty())
+                singleproxy["fingerprint"] = x.Fingerprint;
+            if (!x.ClientFingerprint.empty())
+                singleproxy["client-fingerprint"] = x.ClientFingerprint;
             if (!x.Alpn.empty())
                 singleproxy["alpn"] = x.Alpn;
             if (!x.Ca.empty())
@@ -622,7 +691,7 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
 
         case ProxyType::VLESS:
             singleproxy["type"] = "vless";
-            singleproxy["tls"] = true;
+            singleproxy["tls"] = x.TLSSecure;
             // Output packet-encoding, xudp, packet-addr only if explicitly set
             if (!x.PacketEncoding.empty())
                 singleproxy["packet-encoding"] = x.PacketEncoding;
@@ -636,6 +705,9 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
                 singleproxy["servername"] = x.SNI;
             if (!x.Alpn.empty())
                 singleproxy["alpn"] = x.Alpn;
+            // Only emit encryption when the node actually carries a non-empty value
+            if (!x.VlessEncryption.empty())
+                singleproxy["encryption"] = x.VlessEncryption;
 
             switch(hash_(x.TransferProtocol))
             {
@@ -688,6 +760,36 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
                     singleproxy["grpc-opts"]["grpc-mode"] = x.GRPCMode;
                     singleproxy["grpc-opts"]["grpc-service-name"] = x.GRPCServiceName;
                     break;
+                case "xhttp"_hash:
+                case "splithttp"_hash:
+                    singleproxy["network"] = "xhttp";
+                    if (!x.Path.empty())
+                        singleproxy["xhttp-opts"]["path"] = x.Path;
+                    // host only when present on the node; never fill from servername
+                    if (!x.Host.empty())
+                        singleproxy["xhttp-opts"]["host"] = x.Host;
+                    for (const auto &option : x.XHTTPOptions)
+                        singleproxy["xhttp-opts"][option.first] = yamlScalarFromString(option.second);
+                    if (!x.XHTTPHeaders.empty())
+                    {
+                        for (const auto &header : x.XHTTPHeaders)
+                            singleproxy["xhttp-opts"]["headers"][header.first] = header.second;
+                    }
+                    if (!x.Edge.empty())
+                        singleproxy["xhttp-opts"]["headers"]["Edge"] = x.Edge;
+                    if (!x.XHTTPReuseSettings.empty())
+                    {
+                        YAML::Node reuse = loadNestedYamlOrJson(x.XHTTPReuseSettings);
+                        if (reuse.IsDefined() && !reuse.IsNull())
+                            singleproxy["xhttp-opts"]["reuse-settings"] = reuse;
+                    }
+                    if (!x.XHTTPDownloadSettings.empty())
+                    {
+                        YAML::Node download = loadNestedYamlOrJson(x.XHTTPDownloadSettings);
+                        if (download.IsDefined() && !download.IsNull())
+                            singleproxy["xhttp-opts"]["download-settings"] = download;
+                    }
+                    break;
                 default:
                     break;
             }
@@ -713,6 +815,8 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
                 } else {
                     singleproxy["client-fingerprint"] = "random";
                 }
+            } else if (!x.ClientFingerprint.empty()) {
+                singleproxy["client-fingerprint"] = x.ClientFingerprint;
             }
             if (!scv.is_undef())
                 singleproxy["skip-cert-verify"] = scv.get();
@@ -723,9 +827,9 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
 
         // UDP is not supported yet in clash using snell
         // sees in https://dreamacro.github.io/clash/configuration/outbound.html#snell
-        // Output UDP field when explicitly provided (true or false)
-        if(!x.UDP.is_undef() && x.Type != ProxyType::Snell)
-            singleproxy["udp"] = x.UDP.get();
+        // Prefer resolved node+global flags so udp/tfo round-trip correctly
+        if(!udp.is_undef() && x.Type != ProxyType::Snell)
+            singleproxy["udp"] = udp.get();
         if(!tfo.is_undef())
             singleproxy["tfo"] = tfo.get();
         if(proxy_block)
@@ -956,11 +1060,8 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
         std::string port = std::to_string(x.Port);
         bool &tlssecure = x.TLSSecure;
 
-        tribool udp = ext.udp, tfo = ext.tfo, scv = ext.skip_cert_verify, tls13 = ext.tls13;
-        udp.define(x.UDP);
-        tfo.define(x.TCPFastOpen);
-        scv.define(x.AllowInsecure);
-        tls13.define(x.TLS13);
+        tribool udp, tfo, scv, tls13;
+        applyNodePrefFlags(x, ext, udp, tfo, scv, tls13);
 
         std::string proxy, section, real_section;
         string_array args, headers;
@@ -1435,8 +1536,8 @@ void proxyToQuan(std::vector<Proxy> &nodes, INIReader &ini, std::vector<RulesetC
         switch(x.Type)
         {
         case ProxyType::VMess:
-            scv = ext.skip_cert_verify;
-            scv.define(x.AllowInsecure);
+            scv = x.AllowInsecure;
+            scv.define(ext.skip_cert_verify);
 
             if(method == "auto")
                 method = "chacha20-ietf-poly1305";
@@ -1665,14 +1766,7 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
         std::string port = std::to_string(x.Port);
         bool &tlssecure = x.TLSSecure;
 
-        udp = ext.udp;
-        tfo = ext.tfo;
-        scv = ext.skip_cert_verify;
-        tls13 = ext.tls13;
-        udp.define(x.UDP);
-        tfo.define(x.TCPFastOpen);
-        scv.define(x.AllowInsecure);
-        tls13.define(x.TLS13);
+        applyNodePrefFlags(x, ext, udp, tfo, scv, tls13);
 
         switch(x.Type)
         {
@@ -1787,6 +1881,9 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
                 proxyStr += ", tls-host=" + x.SNI;
             break;
         case ProxyType::VLESS:
+            // Quantumult X has no xhttp transport; skip rather than degrade to over-tls
+            if (transproto == "xhttp" || transproto == "splithttp")
+                continue;
             method = "none";
             proxyStr = "vless = " + hostname + ":" + port + ", method=" + method + ", password=" + uuid;
             if(tlssecure && !tls13.is_undef())
@@ -2074,7 +2171,7 @@ void proxyToMellow(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Rulese
     std::string plugin, pluginopts;
     std::string id, aid, transproto, faketype, host, path, quicsecure, quicsecret, tlssecure;
     std::string url;
-    tribool tfo, scv;
+    tribool udp, tfo, scv;
     std::vector<Proxy> nodelist;
     string_array vArray, remarks_list;
 
@@ -2092,10 +2189,7 @@ void proxyToMellow(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Rulese
 
         std::string &hostname = x.Hostname, port = std::to_string(x.Port);
 
-        tfo = ext.tfo;
-        scv = ext.skip_cert_verify;
-        tfo.define(x.TCPFastOpen);
-        scv.define(x.AllowInsecure);
+        applyNodePrefFlags(x, ext, udp, tfo, scv);
 
         switch(x.Type)
         {
@@ -2239,8 +2333,8 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
         std::string port = std::to_string(x.Port), aid = std::to_string(x.AlterId);
         bool &tlssecure = x.TLSSecure;
 
-        tribool scv = ext.skip_cert_verify;
-        scv.define(x.AllowInsecure);
+        tribool udp, tfo, scv;
+        applyNodePrefFlags(x, ext, udp, tfo, scv);
 
         std::string proxy;
 
@@ -2577,10 +2671,8 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
 
         processRemark(x.Remark, remarks_list, false);
 
-        tribool udp = ext.udp, tfo = ext.tfo, scv = ext.skip_cert_verify;
-        udp.define(x.UDP);
-        tfo.define(x.TCPFastOpen);
-        scv.define(x.AllowInsecure);
+        tribool udp, tfo, scv;
+        applyNodePrefFlags(x, ext, udp, tfo, scv);
         rapidjson::Value proxy(rapidjson::kObjectType);
         switch (x.Type)
         {
@@ -2758,6 +2850,10 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
             }
             case ProxyType::VLESS:
             {
+                // sing-box has no xhttp/splithttp transport; skip rather than emit invalid config
+                if (x.TransferProtocol == "xhttp" || x.TransferProtocol == "splithttp")
+                    continue;
+
                 addSingBoxCommonMembers(proxy, x, "vless", allocator);
                 proxy.AddMember("packet_encoding", "xudp", allocator);
 

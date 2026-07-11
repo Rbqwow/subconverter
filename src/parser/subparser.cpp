@@ -1,5 +1,7 @@
-#include <string>
+#include <algorithm>
+#include <cctype>
 #include <map>
+#include <string>
 
 #include "utils/base64/base64.h"
 #include "utils/ini_reader/ini_reader.h"
@@ -22,6 +24,262 @@ string_array ssr_ciphers = {"none", "table", "rc4", "rc4-md5", "aes-128-cfb", "a
 
 std::map<std::string, std::string> parsedMD5;
 std::string modSSMD5 = "f7653207090ce3389115e9c88541afe0";
+
+// Flat XHTTP options shared by share links and Clash YAML (mihomo xhttp-opts).
+const string_array xhttp_option_keys = {
+    "mode",
+    "no-grpc-header",
+    "no-sse-header",
+    "x-padding-bytes",
+    "x-padding-obfs-mode",
+    "x-padding-key",
+    "x-padding-header",
+    "x-padding-placement",
+    "x-padding-method",
+    "uplink-http-method",
+    "session-placement",
+    "session-key",
+    "session-table",
+    "session-length",
+    "seq-placement",
+    "seq-key",
+    "uplink-data-placement",
+    "uplink-data-key",
+    "uplink-chunk-size",
+    "sc-max-each-post-bytes",
+    "sc-min-posts-interval-ms",
+    "sc-max-buffered-posts",
+    "sc-stream-up-server-secs"
+};
+
+bool isXHTTPOptionKey(const std::string &key)
+{
+    return std::find(xhttp_option_keys.begin(), xhttp_option_keys.end(), key) != xhttp_option_keys.end();
+}
+
+// Convert camelCase / snake_case keys from Xray extra JSON to mihomo kebab-case.
+std::string normalizeXHTTPOptionKey(const std::string &key)
+{
+    std::string result;
+    for (size_t i = 0; i < key.size(); i++)
+    {
+        unsigned char current = static_cast<unsigned char>(key[i]);
+        if (key[i] == '_')
+        {
+            if (!result.empty() && result.back() != '-')
+                result += '-';
+        }
+        else if (std::isupper(current))
+        {
+            bool prev_is_lower_or_digit = i > 0 &&
+                                          (std::islower(static_cast<unsigned char>(key[i - 1])) ||
+                                           std::isdigit(static_cast<unsigned char>(key[i - 1])));
+            bool acronym_ends = i > 0 && i + 1 < key.size() &&
+                                std::isupper(static_cast<unsigned char>(key[i - 1])) &&
+                                std::islower(static_cast<unsigned char>(key[i + 1]));
+            if (!result.empty() && result.back() != '-' && (prev_is_lower_or_digit || acronym_ends))
+                result += '-';
+            result += static_cast<char>(std::tolower(current));
+        }
+        else
+        {
+            result += key[i];
+        }
+    }
+    return result;
+}
+
+std::string jsonScalarToString(const rapidjson::Value &value)
+{
+    if (value.IsString())
+        return value.GetString();
+    if (value.IsBool())
+        return value.GetBool() ? "true" : "false";
+    if (value.IsInt64())
+        return std::to_string(value.GetInt64());
+    if (value.IsUint64())
+        return std::to_string(value.GetUint64());
+    if (value.IsDouble())
+        return std::to_string(value.GetDouble());
+    return "";
+}
+
+// Preserve ranges like "35000-39000"; never pass them through atoi/to_int.
+std::string yamlNodeToString(const YAML::Node &node)
+{
+    if (!node.IsDefined() || node.IsNull())
+        return "";
+    if (node.IsScalar())
+    {
+        try
+        {
+            return node.as<std::string>();
+        }
+        catch (...)
+        {
+        }
+        try
+        {
+            return std::to_string(node.as<int64_t>());
+        }
+        catch (...)
+        {
+        }
+        try
+        {
+            return node.as<bool>() ? "true" : "false";
+        }
+        catch (...)
+        {
+        }
+    }
+    // Maps/sequences: keep YAML text for nested passthrough
+    try
+    {
+        return YAML::Dump(node);
+    }
+    catch (...)
+    {
+        return "";
+    }
+}
+
+void yamlNodeToTribool(const YAML::Node &node, tribool &out)
+{
+    if (!node.IsDefined() || node.IsNull())
+        return;
+    if (!node.IsScalar())
+        return;
+    try
+    {
+        out = node.as<bool>();
+        return;
+    }
+    catch (...)
+    {
+    }
+    out = yamlNodeToString(node);
+}
+
+// YAML may store tls as bool true or string "true"; only treat real true as TLS on.
+bool yamlNodeIsTruthy(const YAML::Node &node)
+{
+    if (!node.IsDefined() || node.IsNull() || !node.IsScalar())
+        return false;
+    try
+    {
+        return node.as<bool>();
+    }
+    catch (...)
+    {
+    }
+    std::string s = yamlNodeToString(node);
+    return s == "true" || s == "1" || s == "tls" || s == "TRUE" || s == "True";
+}
+
+std::string rapidjsonValueToString(const rapidjson::Value &value)
+{
+    if (value.IsObject() || value.IsArray())
+    {
+        rapidjson::StringBuffer buffer;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+        value.Accept(writer);
+        return buffer.GetString();
+    }
+    return jsonScalarToString(value);
+}
+
+void readXHTTPExtraOptions(const std::string &addition, Proxy &node)
+{
+    std::string extra = urlDecode(getUrlArg(addition, "extra"));
+    if (extra.empty())
+        return;
+
+    rapidjson::Document json;
+    json.Parse(extra.data());
+    if (json.HasParseError() || !json.IsObject())
+        return;
+
+    for (auto item = json.MemberBegin(); item != json.MemberEnd(); ++item)
+    {
+        std::string key = normalizeXHTTPOptionKey(item->name.GetString());
+        const auto &val = item->value;
+
+        if (key == "download-settings" && (val.IsObject() || val.IsArray()))
+        {
+            node.XHTTPDownloadSettings = rapidjsonValueToString(val);
+            continue;
+        }
+        if ((key == "xmux" || key == "reuse-settings") && (val.IsObject() || val.IsArray()))
+        {
+            node.XHTTPReuseSettings = rapidjsonValueToString(val);
+            continue;
+        }
+        if (key == "headers" && val.IsObject())
+        {
+            for (auto h = val.MemberBegin(); h != val.MemberEnd(); ++h)
+            {
+                std::string hv = jsonScalarToString(h->value);
+                if (!hv.empty())
+                    node.XHTTPHeaders[h->name.GetString()] = hv;
+            }
+            continue;
+        }
+
+        std::string value = jsonScalarToString(val);
+        if (isXHTTPOptionKey(key) && !value.empty())
+            node.XHTTPOptions[key] = value;
+    }
+}
+
+void applyXHTTPUrlOptionArgs(const std::string &addition, Proxy &node)
+{
+    for (const auto &key : xhttp_option_keys)
+    {
+        std::string value = getUrlArg(addition, key);
+        if (value.empty())
+            value = getUrlArg(addition, replaceAllDistinct(key, "-", "_"));
+        if (!value.empty())
+            node.XHTTPOptions[key] = value;
+    }
+}
+
+void parseXHTTPOptsFromYaml(const YAML::Node &xhttp_opts, Proxy &node, std::string &path, std::string &host)
+{
+    if (!xhttp_opts.IsDefined() || !xhttp_opts.IsMap())
+        return;
+
+    if (xhttp_opts["path"].IsDefined())
+        path = yamlNodeToString(xhttp_opts["path"]);
+    else if (path.empty())
+        path = "/";
+
+    host = yamlNodeToString(xhttp_opts["host"]);
+    if (host.empty() && xhttp_opts["headers"].IsDefined())
+        host = yamlNodeToString(xhttp_opts["headers"]["Host"]);
+
+    for (const auto &key : xhttp_option_keys)
+    {
+        if (xhttp_opts[key].IsDefined() && xhttp_opts[key].IsScalar())
+            node.XHTTPOptions[key] = yamlNodeToString(xhttp_opts[key]);
+    }
+
+    if (xhttp_opts["download-settings"].IsDefined())
+        node.XHTTPDownloadSettings = YAML::Dump(xhttp_opts["download-settings"]);
+    if (xhttp_opts["reuse-settings"].IsDefined())
+        node.XHTTPReuseSettings = YAML::Dump(xhttp_opts["reuse-settings"]);
+
+    if (xhttp_opts["headers"].IsDefined() && xhttp_opts["headers"].IsMap())
+    {
+        for (auto it = xhttp_opts["headers"].begin(); it != xhttp_opts["headers"].end(); ++it)
+        {
+            std::string hk = yamlNodeToString(it->first);
+            std::string hv = yamlNodeToString(it->second);
+            if (!hk.empty() && !hv.empty())
+                node.XHTTPHeaders[hk] = hv;
+        }
+    }
+}
 
 //remake from speedtestutil
 
@@ -1273,9 +1531,12 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
 
         if(port.empty() || port == "0")
             continue;
-        udp = safe_as<std::string>(singleproxy["udp"]);
-        tfo = safe_as<std::string>(singleproxy["fast-open"]);
-        scv = safe_as<std::string>(singleproxy["skip-cert-verify"]);
+        // Prefer native YAML bool so skip-cert-verify/udp survive round-trip
+        yamlNodeToTribool(singleproxy["udp"], udp);
+        yamlNodeToTribool(singleproxy["fast-open"], tfo);
+        if (tfo.is_undef())
+            yamlNodeToTribool(singleproxy["tfo"], tfo);
+        yamlNodeToTribool(singleproxy["skip-cert-verify"], scv);
 
         // Read common new parameters
         singleproxy["ip-version"] >>= ip_version;
@@ -1330,7 +1591,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
                 edge.clear();
                 break;
             }
-            tls = safe_as<std::string>(singleproxy["tls"]) == "true" ? "tls" : "";
+            tls = yamlNodeIsTruthy(singleproxy["tls"]) ? "tls" : "";
 
             vmessConstruct(node, group, ps, server, port, "", id, aid, net, cipher, path, host, edge, tls, sni, udp, tfo, scv, tribool(), underlying_proxy);
 
@@ -1405,12 +1666,17 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
                     singleproxy["quic-opts"]["security"] >>= host;
                     singleproxy["quic-opts"]["key"] >>= path;
                     break;
+                case "xhttp"_hash:
+                case "splithttp"_hash:
+                    net = "xhttp";
+                    parseXHTTPOptsFromYaml(singleproxy["xhttp-opts"], node, path, host);
+                    break;
                 default:
                     singleproxy["host"] >>= host;
                     singleproxy["path"] >>= path;
                     break;
             }
-            tls = safe_as<std::string>(singleproxy["tls"]) == "true" ? "tls" : "";
+            tls = yamlNodeIsTruthy(singleproxy["tls"]) ? "tls" : "";
 
             vlessConstruct(node, group, ps, server, port, uuid, sni, alpn, type, net, mode, host, path, fingerprint, flow, xtls, public_key, short_id, client_fingerprint, udp, tfo, scv, underlying_proxy);
             // Align with link parse: reality implies TLS even when tls: true is omitted
@@ -1421,8 +1687,13 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             node.EchConfig = ech_config;
             node.Certificate = certificate;
             node.PrivateKeyPem = private_key_pem;
-            singleproxy["encryption"] >>= vless_encryption;
-            node.VlessEncryption = vless_encryption;
+            // Keep encryption only when present; empty / missing stays empty (do not invent "none")
+            if (singleproxy["encryption"].IsDefined())
+            {
+                singleproxy["encryption"] >>= vless_encryption;
+                if (!vless_encryption.empty() && vless_encryption != "none")
+                    node.VlessEncryption = vless_encryption;
+            }
             // packet-encoding and xudp support - only assign if explicitly provided
             if(singleproxy["packet-encoding"].IsDefined())
             {
@@ -1715,25 +1986,30 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes)
             break;
         case "hysteria2"_hash:
             group = HYSTERIA2_DEFAULT_GROUP;
-            singleproxy["ports"] >>= ports;
-            singleproxy["mport"] >>= node.Mport;
-            singleproxy["up"] >>= up;
-            singleproxy["down"] >>= down;
-            singleproxy["password"] >>= password;
+            // Keep port ranges as raw strings (e.g. "35000-39000"); never to_int/atoi
+            ports = yamlNodeToString(singleproxy["ports"]);
+            node.Mport = yamlNodeToString(singleproxy["mport"]);
+            if (ports.empty() && !node.Mport.empty())
+                ports = node.Mport;
+            if (node.Mport.empty() && !ports.empty())
+                node.Mport = ports;
+            up = yamlNodeToString(singleproxy["up"]);
+            down = yamlNodeToString(singleproxy["down"]);
+            password = yamlNodeToString(singleproxy["password"]);
             if (password.empty())
-                singleproxy["auth"] >>= password;
-            singleproxy["obfs"] >>= obfs;
-            singleproxy["obfs-password"] >>= obfs_password;
-            singleproxy["sni"] >>= sni;
-            singleproxy["fingerprint"] >>= fingerprint;
+                password = yamlNodeToString(singleproxy["auth"]);
+            obfs = yamlNodeToString(singleproxy["obfs"]);
+            obfs_password = yamlNodeToString(singleproxy["obfs-password"]);
+            sni = yamlNodeToString(singleproxy["sni"]);
+            fingerprint = yamlNodeToString(singleproxy["fingerprint"]);
             if (singleproxy["alpn"].IsSequence())
-                singleproxy["alpn"][0] >>= alpn;
+                alpn = yamlNodeToString(singleproxy["alpn"][0]);
             else
-                singleproxy["alpn"] >>= alpn;
-            singleproxy["ca"] >>= ca;
-            singleproxy["ca-str"] >>= ca_str;
-            singleproxy["cwnd"] >>= cwnd;
-            singleproxy["hop-interval"] >>= hop_interval;
+                alpn = yamlNodeToString(singleproxy["alpn"]);
+            ca = yamlNodeToString(singleproxy["ca"]);
+            ca_str = yamlNodeToString(singleproxy["ca-str"]);
+            cwnd = yamlNodeToString(singleproxy["cwnd"]);
+            hop_interval = yamlNodeToString(singleproxy["hop-interval"]);
             hysteria2Construct(node, group, ps, server, port, ports, up, down, password, obfs, obfs_password, sni, fingerprint, alpn, ca, ca_str, cwnd, hop_interval, udp, tfo, scv, underlying_proxy);
 
             // Assign new parameters to node for Hysteria2
@@ -2230,6 +2506,9 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
         switch(hash_(net))
         {
             case "tcp"_hash:
+            case "raw"_hash:
+                net = "tcp";
+                [[fallthrough]];
             case "ws"_hash:
             case "h2"_hash:
                 type = getUrlArg(addition, "headerType");
@@ -2246,6 +2525,19 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
                 host = getUrlArg(addition, strFind(addition,"sni") ? "sni" : "quicSecurity");
                 path = getUrlArg(addition, "key");
                 break;
+            case "xhttp"_hash:
+            case "splithttp"_hash:
+                net = "xhttp";
+                type = getUrlArg(addition, "headerType");
+                // host and sni are distinct in mihomo xhttp-opts; do not fill host from sni
+                host = getUrlArg(addition, "host");
+                path = getUrlArg(addition, "path");
+                if (path.empty())
+                    path = "/";
+                // extra first, then flat URL args override
+                readXHTTPExtraOptions(addition, node);
+                applyXHTTPUrlOptionArgs(addition, node);
+                break;
             default:
                 return;
         }
@@ -2261,6 +2553,13 @@ void explodeStdVLESS(std::string vless, Proxy &node) {
         remarks = add + ":" + port;
     node.TLSSecure = security == "tls" || security == "reality";
     vlessConstruct(node, VLESS_DEFAULT_GROUP, remarks, add, port, uuid, sni, alpn, type, net, mode, host, path, fingerprint, flow, xtls, public_key, short_id, client_fingerprint, tribool(), tfo, scv, "");
+    if (!addition.empty())
+    {
+        std::string encryption = getUrlArg(addition, "encryption");
+        // Skip placeholder "none"; only real vless encryption schemes are kept
+        if (!encryption.empty() && encryption != "none")
+            node.VlessEncryption = encryption;
+    }
 }
 
 void explodeVLESS(std::string vless, Proxy &node) {
